@@ -17,8 +17,12 @@ pygame.init()
 
 WIDTH = 1080
 HEIGHT = 720
-DUNGEON_WIDTH = 40
+DUNGEON_WIDTH = 40      #Map size in TILES, not pixels
 DUNGEON_HEIGHT = 30
+TILE_SIZE = 24          #Pixels per tile. 40*24 = 960 wide, 30*24 = 720 tall, so
+                        #a whole floor fits on screen and no camera is needed YET
+MAP_OFF_X = (WIDTH - DUNGEON_WIDTH * TILE_SIZE) // 2    #Centre the map
+MAP_OFF_Y = 0
 ROOM_MIN = 4
 ROOM_MAX = 8
 MAX_ROOMS = 30
@@ -32,6 +36,8 @@ clrWhite = pygame.Color(255, 255, 255)
 clrRed = pygame.Color(120, 0, 0)
 clrLRed = pygame.Color(200, 0, 0)
 clrBlue = pygame.Color(50, 50, 200)
+clrBrown = pygame.Color(110, 70, 30)    #Doors
+clrGold = pygame.Color(200, 170, 60)    #Exit stairs
 
 Font = pygame.font.SysFont('cinzel', 45)
 SmallFont = pygame.font.SysFont('cinzel', 25)
@@ -67,8 +73,9 @@ GEN_CONFIG = {
 
     "place_doors":       True,        # mark corridor tiles that touch a room
     "prune_unreachable": True,        # fill in anything the flood fill can't reach
-    "place_stairs":      True,       
+    "place_stairs":      True,        # entrance in room 0, exit in the farthest room
 
+    "enemy_chance":      0.6,         # chance an eyeball spawns in a room (start room excluded)
 }
 
 
@@ -244,6 +251,9 @@ class Room:
     def contains(self, x, y): #Return bool if player is in room
         return self.x1 <= x <= self.x2 and self.y1 <= y <= self.y2
 
+    def random_spot(self, rng): #Somewhere inside this room, never in a wall
+        return rng.randint(self.x1, self.x2), rng.randint(self.y1, self.y2)
+
 class Dungeon:
     def __init__(self, width, height):
         self.width, self.height = width, height
@@ -251,14 +261,21 @@ class Dungeon:
         self.rooms = [] #store # of rooms
         self.start = (0, 0)
         self.exit = None
-        self.seed = None 
+        self.seed = None
+        self.rng = None #The dice cup that built this floor, kept so the enemy
+                        #spawns come out of the SAME seeded stream as the map
+
+    def in_bounds(self, x, y):
+        #The outer ring is excluded on purpose: the map needs a solid border,
+        #or a corridor can be carved off the edge of the world
+        return 1 <= x < self.width - 1 and 1 <= y < self.height - 1
 
     def is_walkable(self, x, y):
-        return self(x, y) and self.tiles[x][y] in WALKABLE
-    
+        return self.in_bounds(x, y) and self.tiles[x][y] in WALKABLE
+
     def carve(self, x, y, tile=FLOOR):
-        if self(x, y):
-            self.tiles[x][y] = tile
+        if self.in_bounds(x, y):    #self(x, y) tried to CALL the dungeon
+            self.tiles[x][y] = tile #object, which is not callable
 
     def carve_room(self, room):
         for x in range(room.x1, room.x2 + 1): #Horz can_h
@@ -291,10 +308,10 @@ def place_rooms_bsp(dungeon, rng, cfg):
     min_side = cfg['room_min'] + pad * 2 + 1 #Slice must a room & padding
 
     def split(x, y, w, h, depth):
-        too_small = (w < min_side * 2 and h < min_side * 2) 
-        if depth <= 0 and too_small:
-            rw = min(cfg['room_max'], max(cfg['room_min']), w - pad * 2 ) #room width
-            rh = min(cfg['room_max'], max(cfg['room_min']), h - pad * 2 ) #height
+        too_small = (w < min_side * 2 and h < min_side * 2)
+        if depth <= 0 or too_small: #OR: stop when we run out of depth OR of space
+            rw = min(cfg['room_max'], max(cfg['room_min'], w - pad * 2)) #room width
+            rh = min(cfg['room_max'], max(cfg['room_min'], h - pad * 2)) #height
             if rw < 1 or rh < 1 or rw > w or rh > h:
                 return                             #Skip if slice is too thin
             rx = rng.randint(x, x + w - rw)       
@@ -322,30 +339,69 @@ def place_rooms_bsp(dungeon, rng, cfg):
     for room in dungeon.rooms:
         dungeon.carve_room(room)
 
+#Carve corridors (straight)
+#The two halves of an L. 'wide' carves a second lane so bigger sprites fit.
+def h_corridor(dungeon, x1, x2, y, wide):
+    for x in range(min(x1, x2), max(x1, x2) + 1):
+        dungeon.carve(x, y)
+        if wide:
+            dungeon.carve(x, y + 1)
+
+def v_corridor(dungeon, y1, y2, x, wide):
+    for y in range(min(y1, y2), max(y1, y2) + 1):
+        dungeon.carve(x, y)
+        if wide:
+            dungeon.carve(x + 1, y)
+
+def L_corridor(dungeon, a, b, rng, wide):
+    #Across then down, or down then across. Flipping a coin on the order stops
+    #every hallway bending the same way, which is an instant "a computer made
+    #this" tell. Also the fallback when a drunk walk gets lost.
+    if rng.random() < 0.5:
+        h_corridor(dungeon, a.cx, b.cx, a.cy, wide)
+        v_corridor(dungeon, a.cy, b.cy, b.cx, wide)
+    else:
+        v_corridor(dungeon, a.cy, b.cy, a.cx, wide)
+        h_corridor(dungeon, a.cx, b.cx, b.cy, wide)
+
 #Carve corridors (drunk)
 #dungeon = instance of Dungeon
 #a = starting, b = destination, rng
-def drunk_corridor(dungeon, a, b, rng): 
+#Step toward the target MOST of the time and stumble sideways the rest. The
+#bias (0.7) is the design knob: 1.0 = a boring straight line, 0.5 = it may
+#never arrive at all.
+def drunk_corridor(dungeon, a, b, rng, wide):
     x, y = a.cx, a.cy
-    budget = (abs(a.cx - b.cx) + abs(a.cy - b.cy))   * 6 + 40 #1 per tile
-    while (x, y) != (b.cx, b.cy) and budget > 0: 
-        budget -= 1 
-        dungeon.carve(x + 1, y)
-        if rng.random() < 0.7:
+    budget = (abs(a.cx - b.cx) + abs(a.cy - b.cy)) * 6 + 40 #Step budget
+    while (x, y) != (b.cx, b.cy) and budget > 0:
+        budget -= 1
+        dungeon.carve(x, y)         #Carve where we ARE. Carving x + 1 instead
+        if wide:                    #left the tile we stand on solid, so the
+            dungeon.carve(x + 1, y) #"corridor" had a wall running down it
+        if rng.random() < 0.7:      #Sober step: close the gap
             if rng.random() < 0.5 and x != b.cx: #Choose an axis (rng)
-                x += 1 if b.cx > x else -1 
+                x += 1 if b.cx > x else -1
             elif y != b.cy:
                 y += 1 if b.cy > y else -1
             else:
                 x += 1 if b.cx > x else -1
-        else:
+        else:                       #Drunk step: wander
             x, y = rng.choice(dungeon.neighbours4(x, y))
-            x = max(1, min(dungeon.width - 2, x))        # clamp: never leave the map
-            y = max(1, min(dungeon.height - 2, y))
-        
+        #Clamp EVERY step, not only the drunk ones, or a sober step along the
+        #edge still walks off the map
+        x = max(1, min(dungeon.width - 2, x))
+        y = max(1, min(dungeon.height - 2, y))
+    #Out of budget means the walk got lost. Finish with a straight L so the two
+    #rooms end up connected no matter what: "random" and "guaranteed to arrive"
+    #are two different promises, and the generator has to keep the second one.
+    if (x, y) != (b.cx, b.cy):
+        L_corridor(dungeon, Room(x, y, 1, 1), b, rng, wide)
+
 def connect(dungeon, a, b, rng, cfg):
-    if cfg["corridor_style"] == "drunk": #Remove later
-        drunk_corridor(dungeon, a, b, rng) #leave this
+    if cfg["corridor_style"] == "drunk":
+        drunk_corridor(dungeon, a, b, rng, cfg["wide_corridors"])
+    else:
+        L_corridor(dungeon, a, b, rng, cfg["wide_corridors"])
 
 #Nearest Room Connection
 def connect_rooms(dungeon, rng, cfg):
@@ -377,18 +433,38 @@ def connect_rooms(dungeon, rng, cfg):
 
 #BFS - search for shortest path to exit by ring
 #(and it's nodes) and checks if all rooms are connected
-def flood_fill(dungeon, start):  
-    distance = {start, 0}       
+def flood_fill(dungeon, start):
+    distance = {start: 0}       #DICT (tile -> steps), not a set. {start, 0} is
+                                #a set literal, and a set cannot be indexed, so
+                                #the first distance[(nx, ny)] = ... blew up
     queue = [start]             #start from beginning cordinations of list
     head = 0
     while head < len(queue):
         x, y = queue[head]
-        head += 1
+        head += 1               #Index instead of pop(0): pop(0) is O(n) and
+                                #would turn this BFS into O(n^2)
         for nx, ny in dungeon.neighbours4(x, y):
             if (nx, ny) not in distance and dungeon.is_walkable(nx, ny):
                 distance[(nx, ny)] = distance[(x, y)] + 1     
                 queue.append((nx, ny))  #queue the next set of coordinates to examine
     return distance
+
+#Doors
+#A door belongs on a corridor tile that touches a room. So: every floor tile
+#that is NOT inside a room but has a room tile next to it is a doorway. The
+#already_doored check stops a clump of five doors appearing in a row.
+def place_doors(dungeon):
+    for x in range(1, dungeon.width - 1):
+        for y in range(1, dungeon.height - 1):
+            if dungeon.tiles[x][y] != FLOOR or dungeon.room_at(x, y):
+                continue
+            touches_room = any(dungeon.room_at(nx, ny)
+                               for nx, ny in dungeon.neighbours4(x, y))
+            already_doored = any(dungeon.tiles[nx][ny] == DOOR
+                                 for nx, ny in dungeon.neighbours4(x, y))
+            if touches_room and not already_doored:
+                dungeon.tiles[x][y] = DOOR
+
 
 #Generate dungeon
 def generate_dungeon(config = None, seed = None):
@@ -404,6 +480,7 @@ def generate_dungeon(config = None, seed = None):
 
     dungeon = Dungeon(cfg["width"], cfg["height"])
     dungeon.seed = seed
+    dungeon.rng = rng   #Kept on the floor so enemy spawns share this stream
 
     # 1 + 2 - solid rock, then rooms
     #if cfg["algorithm"] == "random":
@@ -419,6 +496,11 @@ def generate_dungeon(config = None, seed = None):
 
     # 3 - corridors
     connect_rooms(dungeon, rng, cfg)
+
+    # 4 - validate and decorate
+    if cfg["place_doors"]:
+        place_doors(dungeon)    #With wide_corridors on you get the odd double
+                                #door at a room mouth, which is fine
 
     dungeon.start = (dungeon.rooms[0].cx, dungeon.rooms[0].cy)
     distances = flood_fill(dungeon, dungeon.start)
@@ -446,6 +528,18 @@ def generate_dungeon(config = None, seed = None):
         dungeon.tiles[dungeon.start[0]][dungeon.start[1]] = ENTER
 
     return dungeon
+
+
+#Debug view - print the floor as text. Check this BEFORE trusting the renderer:
+#if the ASCII looks wrong then the bug is in the generator, not in the drawing
+ASCII_TILES = {WALL: '#', FLOOR: '.', DOOR: '+', ENTER: '<', EXIT: '>'}
+
+def ascii_render(dungeon):
+    lines = []
+    for y in range(dungeon.height):     #Rows are y...
+        lines.append(''.join(ASCII_TILES[dungeon.tiles[x][y]]
+                             for x in range(dungeon.width)))  #...columns are x
+    return '\n'.join(lines)
 
 
 #=====================================================================
@@ -554,12 +648,14 @@ Eye_moves = [
 #======================================================================
 
 #Dungeon colors
+#Doors were white and the exit was red, but the player marker is white and the
+#eyeballs are red, so a door read as the player and the stairs read as a monster
 TILE_COLORS = {
-    WALL:  clrDDGrey,
-    FLOOR: clrDGrey,
-    DOOR:  clrWhite,
-    ENTER: clrBlue,
-    EXIT:  clrRed,
+    WALL:  clrDDGrey,   #Solid rock
+    FLOOR: clrDGrey,    #Walkable
+    DOOR:  clrBrown,    #Room/corridor seam
+    ENTER: clrBlue,     #Where you spawned
+    EXIT:  clrGold,     #Stairs to the next floor
 }
 
 #Buttons
@@ -567,10 +663,14 @@ classes = button(440, 500, 200, 60, "classes")
 Rematch = button(WIDTH//2 - 150, 500, 150, 60, "Rematch")
 Quit = button(WIDTH//2 + 20,  500, 150, 60, "Quit")
 
-#Global Boolean values - flip through game states (menu screen, Selection screen, battle screen, stats screen)
+#Global Boolean values - flip through game states
+#Menu screen -> Selection screen -> Dungeon -> Battle -> Dungeon (win) / Stats (lose)
 Menu = True
 selection = False
-dungeon = False         #Dungeon exploration, not implemented
+Explore = False         #Dungeon exploration. The flag CANNOT be called 'dungeon':
+                        #that name holds the Dungeon instance itself, so the first
+                        #dungeon = generate_dungeon(...) would destroy the flag,
+                        #and 'elif dungeon:' would then be testing a map object
 Battle = False
 Stats = False           #Must change in gameloop as player has a new objective
 
@@ -582,17 +682,30 @@ enemy_acted = False     #prevents enemy from attacking every frame
 Message = ''            #Screen terminal
 Selected_class = None   #player
 
-#Stats 
+#Stats - these cover the whole RUN now, not one fight, so they survive from
+#battle to battle and only get wiped when a new run starts
 dmg_dealt = 0
-dmg_taken = 0           
-Battle_won = False 
+dmg_taken = 0
+Battle_won = False
+battles_won = 0
+
+#Dungeon exploration state
+dungeon = None          #The current Dungeon instance (generate_dungeon() output)
+dungeon_level = 1       #Floor number, goes up every time the stairs are used
+player_tile = (0, 0)    #Player position in TILES (not pixels)
+dungeon_enemies = []    #[{'x':.., 'y':.., 'name':'Eye'}, ...] eyeballs on this floor
+current_encounter = None#The enemy dict that started the fight we are in 
 
 
 #=====================================================================
 #Main Gameloop Functions
 #----------------------------------------------------------------------
-#Start_battle() - Intialize battle with selected class (Class_name) and 
-#the enemy (Eye) and generates the moveset buttons for player.
+#create_player() - build the chosen class ONCE, on the selection screen. The
+#player now has to survive several fights, so it is no longer rebuilt per
+#battle (rebuilding handed back full HP every time a fight started)
+#
+#Start_battle() - Intialize a battle against one eyeball from the floor and
+#generate the moveset buttons for the player. Dungeon -> Battle.
 #
 #Player_atk() - player attack logic, when turn is = player and move button
 #is_clicked. Updates Enemy health and player health (heal) and checks for
@@ -612,20 +725,114 @@ def cycle(cfg, field, values):
     cfg[field] = values[(i + 1) % len(values)]
 
 
+#=====================================================================
+#Dungeon exploration
+#----------------------------------------------------------------------
+#spawn_enemies()  - one roll per room, using the floor's OWN seeded rng so the
+#                   same seed gives the same monsters as well as the same map
+#enter_dungeon()  - generate a floor, spawn eyeballs, drop the player on '<'
+#enemy_at()       - is something standing on this tile
+#move_player()    - one tile per keypress (turn-based, same as the combat).
+#                   Walking into an eyeball starts a battle, walking onto the
+#                   stairs generates the next floor
+#draw_dungeon()   - PLACEHOLDER renderer: one rect per tile, one rect per
+#                   creature. This is the hook for the checklist items
+#                   (minifigures, camera, dungeon UI, inventory)
+#======================================================================
+
+def spawn_enemies(dungeon, cfg):
+    #Room 0 is skipped: spawning an eyeball on top of the player is not a fight,
+    #it is an ambush the player never agreed to
+    enemies = []
+    for room in dungeon.rooms[1:]:
+        if dungeon.rng.random() < cfg['enemy_chance']:
+            x, y = room.random_spot(dungeon.rng)
+            if (x, y) != dungeon.start and (x, y) != dungeon.exit:
+                enemies.append({'x': x, 'y': y, 'name': 'Eye'})
+    return enemies
+
+def enter_dungeon(level = 1):
+    global dungeon, dungeon_enemies, dungeon_level, player_tile
+    global Menu, selection, Explore, Battle, Stats, Message
+
+    dungeon_level = level
+    dungeon = generate_dungeon(GEN_CONFIG)      #Fresh seed = a floor nobody has
+    dungeon_enemies = spawn_enemies(dungeon, GEN_CONFIG)    #ever seen before
+    player_tile = dungeon.start                 #dungeon.start is room 0's centre
+
+    Menu = False
+    selection = False
+    Explore = True
+    Battle = False
+    Stats = False
+    Message = f'Floor {dungeon_level} - {len(dungeon_enemies)} eyes. Find the gold stairs.'
+    print(f'--- floor {dungeon_level}, seed {dungeon.seed} ---')
+    print(ascii_render(dungeon))                #Terminal check, same as always
+
+def enemy_at(x, y):
+    for foe in dungeon_enemies:
+        if foe['x'] == x and foe['y'] == y:
+            return foe
+    return None
+
+def move_player(dx, dy):
+    global player_tile, Message
+    x, y = player_tile[0] + dx, player_tile[1] + dy
+
+    if not dungeon.is_walkable(x, y):   #Walls stop you. The generator promised
+        return                          #every floor tile is reachable, so this
+                                        #is the ONLY movement rule needed here
+    player_tile = (x, y)
+
+    foe = enemy_at(x, y)
+    if foe:
+        start_battle(foe)               #Dungeon -> Battle
+        return
+
+    if dungeon.tiles[x][y] == EXIT:     #Stairs -> next floor, deeper and fresh
+        enter_dungeon(dungeon_level + 1)
+
+def tile_rect(x, y, tile_px = TILE_SIZE):
+    return pygame.Rect(MAP_OFF_X + x * tile_px, MAP_OFF_Y + y * tile_px,
+                       tile_px, tile_px)
+
 def draw_dungeon(screen, dungeon, tile_px):
+    #PLACEHOLDER ART. Every tile is a flat rect, so the generator can be judged
+    #on its own before any sprite work happens.
+    #TODO(you): minifigure sprites instead of the two rects below
+    #TODO(you): camera - draw only the tiles around player_tile and offset them,
+    #           instead of blitting the whole 40x30 floor every frame
     for x in range(dungeon.width):
         for y in range(dungeon.height):
-            rect = pygame.Rect(x * tile_px, y * tile_px, tile_px, tile_px)
-            pygame.draw.rect(screen, TILE_COLORS[dungeon.tiles[x][y]], rect)
+            pygame.draw.rect(screen, TILE_COLORS[dungeon.tiles[x][y]],
+                             tile_rect(x, y, tile_px))
 
-def start_battle(class_name): 
-    #globalize all variables
-    global player, enemy, player_hpbar, enemy_hpbar, Move_Buttons
-    global turn, enemy_acted, Message, Battle, selection, Menu
-    global dmg_dealt, dmg_taken 
+    for foe in dungeon_enemies:             #Eyeballs
+        pygame.draw.rect(screen, clrLRed,
+                         tile_rect(foe['x'], foe['y'], tile_px).inflate(-6, -6))
+
+    pygame.draw.rect(screen, clrWhite,      #The player
+                     tile_rect(player_tile[0], player_tile[1], tile_px).inflate(-8, -8))
+
+    #Bare-minimum HUD so the floor is playable
+    #TODO(you): this is where the real dungeon UI and the inventory go
+    hud = SmallFont.render(
+        f'Floor {dungeon_level}   {player.name}  HP {player.health}/{player.health_max}   '
+        f'Eyes left: {len(dungeon_enemies)}', True, clrWhite)
+    screen.blit(hud, (MAP_OFF_X + 8, 8))
+    note = SmallFont.render(Message, True, clrWhite)
+    screen.blit(note, (MAP_OFF_X + 8, HEIGHT - 32))
+
+def create_player(class_name):
+    #Runs once, when a card is clicked on the selection screen
+    global player, player_hpbar, Selected_class
+    global dmg_dealt, dmg_taken, battles_won, Battle_won
 
     dmg_dealt = 0 #start as 0
-    dmg_taken = 0 
+    dmg_taken = 0
+    battles_won = 0
+    Battle_won = False
+    Selected_class = class_name
 
     #class_name means the selected class from selection screen
     #No take backs or confirmation screen
@@ -639,6 +846,14 @@ def start_battle(class_name):
         player = Character("Archer", 95, Archer_moves)
         player_hpbar = HealthBar(150, 150, 200, 40, 95)
     player_hpbar.set_char(player.name)
+
+def start_battle(encounter):
+    #encounter = the {'x','y','name'} dict of the eyeball we walked into, kept
+    #so the right one can be deleted from the floor once it dies
+    global enemy, enemy_hpbar, Move_Buttons, current_encounter
+    global turn, enemy_acted, Message, Battle, Explore, selection, Menu
+
+    current_encounter = encounter
 
     #Initilize the enemy
     enemy = Character('Eye', 80, Eye_moves)
@@ -654,17 +869,23 @@ def start_battle(class_name):
          #New list that contains the moves from either Sword, wizard, or archer
         Move_Buttons.append(MovesUI(x, y, 220, 50, move)) 
 
+    #Fresh cooldowns every fight, but NOT fresh health: damage carries between
+    #rooms, and that is what makes exploring a risk
+    player.reset_CD()
+
     Battle = True
+    Explore = False
     selection = False
     Menu = False
     turn = 'player'
-    enemy_acted = False    
+    enemy_acted = False
     #Print check
     Message = (f"{player.name} vs {enemy.name}")#, player's turn!") 
     print(Message) # terminal
     
 def player_atk(move_index): #Function for player attack ONLY
     global Message, Battle, turn, enemy_acted, Stats, Battle_won, dmg_dealt
+    global Explore, battles_won, current_encounter
     move = player.use_move(move_index) #i
     #if move is None:
     #    return
@@ -680,16 +901,20 @@ def player_atk(move_index): #Function for player attack ONLY
 
     #Enemy death check
     if enemy.health <= 0:
-        Message = (f"{enemy.name} got cooked, winner winner chicken dinner")
         Battle_won = True
-        Stats = True #Initiate stats screen (win)
-        Battle = False #End battle
+        battles_won += 1
+        if current_encounter in dungeon_enemies:
+            dungeon_enemies.remove(current_encounter)  #It stays dead when we
+        current_encounter = None                       #walk over that tile again
+        Message = (f"{enemy.name} got cooked. HP {player.health}/{player.health_max}")
+        Battle = False   #Win -> straight back to the floor, wounds and all
+        Explore = True
     else:
         turn = 'enemy'
         enemy_acted = False #Enemy can act next frame
 
 def enemy_atk():
-    global Message, turn, Battle, dmg_taken,Battle_won, Stats, enemy_acted, dmg_taken
+    global Message, turn, Battle, Battle_won, Stats, enemy_acted, dmg_taken, Explore
     #Finding which moves the enemy can currently use, since enemy also has some moves with CD
     Ready_or_not = [i for i, cd in enumerate(enemy.move_CDs) if cd == 0] #HERE I COME
     if not Ready_or_not: #Incase the enemy randomly chooses a move that is in CD, cause choosing from an empty list will crash
@@ -715,32 +940,44 @@ def enemy_atk():
     if player.health <= 0:
         Message = (f"{player.name} got cooked, you lose")
         Battle_won = False
-        Stats = True #Initiate stats screen (win)
-        Battle = False #End battle
+        Stats = True    #Dying is the only way into the stats screen now
+        Battle = False  #End battle, end run
+        Explore = False
     else:
         turn = 'player'
         enemy_acted = True #Enemy can act next frame
 
-def reset(): #Reset game for the same playthrough (rematch)
-    global Menu, selection, Battle, Stats, player, enemy, turn, enemy_acted, Message, dmg_dealt, dmg_taken
+def reset(): #Reset the game for a brand new run
+    global Menu, selection, Explore, Battle, Stats, player, enemy, turn, enemy_acted
+    global Message, dmg_dealt, dmg_taken, Battle_won, battles_won
+    global dungeon, dungeon_enemies, dungeon_level, current_encounter
     Menu = True
     selection = False
+    Explore = False
     Battle = False
     Stats = False
-    player = None 
-    enemy = None 
-    turn = 'player' 
-    enemy_acted = False 
-    Message = '' 
+    player = None
+    enemy = None
+    turn = 'player'
+    enemy_acted = False
+    Message = ''
     dmg_dealt = 0
     dmg_taken = 0
+    Battle_won = False
+    battles_won = 0
+    #Throw the whole floor away: a new run has to roll a new dungeon
+    dungeon = None
+    dungeon_enemies = []
+    dungeon_level = 1
+    current_encounter = None
 
 
 #=====================================================================
 #Gameloop
 #----------------------------------------------------------------------
-#Constantly checks for events (Menu, selection, Battle, Stats) and draws
-#the appropriate screen based on game state. 
+#Constantly checks for events (Menu, selection, Explore, Battle, Stats) and
+#draws the appropriate screen based on game state.
+#Flow: Menu -> selection -> Explore -> Battle -> Explore (win) / Stats (lose) 
 #Battle turn logic handled outside the event loop, enemy attack logic is
 #handled on boolean and turn = 'enemy'/'player' and CDs are decreased at
 #the start of every player turn
@@ -766,13 +1003,30 @@ while Rungame:
                 pos = pygame.mouse.get_pos()
                 for card in class_cards:
                     if card.is_clicked(pos):
-                        start_battle(card.name) #intialize dungeon instead - in progress
+                        create_player(card.name)    #Build the class...
+                        enter_dungeon(1)            #...then drop it on floor 1
                         break
 
-        elif dungeon: #Trigger after selection screen. Return to this screen after every Battle assuming the player is still alive.
-            
-        
-        #breaks every turn after the player has chosen a move. 
+        #Trigger after selection screen. Return to this screen after every
+        #Battle assuming the player is still alive.
+        #One keypress = one tile = one turn, same rhythm as the combat.
+        elif Explore:
+            if event.type == pygame.KEYDOWN:
+                if event.key in (K_UP, K_w):
+                    move_player(0, -1)
+                elif event.key in (K_DOWN, K_s):
+                    move_player(0, 1)
+                elif event.key in (K_LEFT, K_a):
+                    move_player(-1, 0)
+                elif event.key in (K_RIGHT, K_d):
+                    move_player(1, 0)
+                #Two generator debug keys. Keep them while tuning GEN_CONFIG:
+                elif event.key == K_r:              #Re-roll THIS floor
+                    enter_dungeon(dungeon_level)
+                elif event.key == K_TAB:            #Print the floor as text
+                    print(ascii_render(dungeon))
+
+        #breaks every turn after the player has chosen a move.
         elif Battle:
             if turn == 'player' and event.type == pygame.MOUSEBUTTONDOWN:
                 pos = pygame.mouse.get_pos()
@@ -811,8 +1065,10 @@ while Rungame:
         for card in class_cards:
             card.draw(screen)
 
-    elif dungeon:
-    
+    elif Explore:
+        screen.fill(clrBlack)
+        draw_dungeon(screen, dungeon, TILE_SIZE)
+
     elif Battle:
         #Draw battle background
         screen.blit(BGBattle, (0, 0))
@@ -858,6 +1114,11 @@ while Rungame:
         taken = SmallFont.render(f'Damage Taken: {dmg_taken}', True, clrWhite)
         screen.blit(dealt, (WIDTH//2 - dealt.get_width()//2, 280))
         screen.blit(taken, (WIDTH//2 - taken.get_width()//2, 320))
+        #Run summary - how deep the dungeon got before it killed you
+        floors = SmallFont.render(f'Floor Reached: {dungeon_level}', True, clrWhite)
+        kills = SmallFont.render(f'Eyes Killed: {battles_won}', True, clrWhite)
+        screen.blit(floors, (WIDTH//2 - floors.get_width()//2, 360))
+        screen.blit(kills, (WIDTH//2 - kills.get_width()//2, 400))
 
         #Rematch / quit 
         Rematch.draw(screen)
