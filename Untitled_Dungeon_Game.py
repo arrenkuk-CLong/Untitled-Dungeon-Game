@@ -3,13 +3,17 @@
 #Turn-based combat, procedural generation, game-feel, and save and load files.
 #Additional: player inventory, UI, animations, and screen-shake.
 #Checklist
-#Incorporate the procedural dungeon generation into the game
-#Make minifigures of players and enemy for dungeon exploration #(not necessary yet)
-#Make UI for dungeon exploration
-#Make inventory
-#Add elements (Json (inventory), screenshake, animations, etc) to make the game feel more alive
+#TODO Make minifigures of players and enemy for dungeon exploration #(not necessary yet)
+#TODO Add Moving enemies (within FOV Radius)
+#TODO Add save file systems - then improve permadeath mechanics
+#TODO add a second enemy to list and a Boss (if this week has time)
+#TODO Debug turn-based damage and animation logic (thigs play too fast)
+#TODO Add levels / leveling system 
 
 
+
+
+import os
 import pygame, random, sys, json
 import gif_pygame
 from pygame.locals import *
@@ -80,13 +84,12 @@ GEN_CONFIG = {
     "place_stairs":      True,        # entrance in room 0, exit in the farthest room
 
     "enemy_chance":      0.6,         # chance an eyeball spawns in a room (start room excluded)
+    "enemy_fov_radius":  6,           # enemies only chase when this close to the player
     "item_chance":       0.4,
 }
 
 #Items (Explore mode) - JSON
-#ITEM_SPRITE_MAP says what an item LOOKS like. ITEM_EFFECTS (below) says what
-#it DOES. Keeping them apart means adding an item is two small edits instead of
-#one big one, and the inventory never has to know anything about sprites.
+#ITEM_SPRITE_MAP tells you what the item looks like
 ITEM_SPRITE_MAP = {
     "Health Potion": "health_potion",
     #"Greater Health Potion": "health_potion",
@@ -100,17 +103,54 @@ ITEM_SPRITE_MAP = {
     #"Scroll of Teleportation": "strength_scroll"
 }
 
-#What each item does when used. Health potions only for now, so this is the one
-#entry that matters; the commented items above each need a line here too.
+#Enemies (Explore mode)
+ENEMY_SPRITE_MAP = {
+    "Eye": "Mini_Eye.png",
+#    "Zombie": "zombie",
+#    "Bat": "bat",
+#    "Slime": "slime",
+#    "Wraith": "wraith"
+}
+
+#What each item does when used. 
 #These values are what gets written into the JSON alongside the quantity.
 ITEM_EFFECTS = {
     "Health Potion": {"heal": 30},
 }
 
-INVENTORY_FILE = 'inventory.json'   #Written next to the game file
-INVENTORY_PERSISTS = True           #True  = potions survive death and even
-                                    #        closing the game (a real save file)
+ENEMIES_FILE = 'enemies.json'       #Json file for enemies (Store name, hp, and moves?)
+
+INVENTORY_FILE = 'inventory.json'   #Json File for items
+#Actual JSON (saving data)
+INVENTORY_PERSISTS = True           #True  = potions survive death and even closing the game (a real save file)
                                     #False = every run starts with an empty bag
+
+#Exploration mode sprites 
+#create pngs on piskel.
+def explore_sprites(name, scale = TILE_SIZE):
+    if isinstance(scale, int):
+        scale = (scale, scale)
+
+    sprite_name = 'Player' if name == 'Player' else ENEMY_SPRITE_MAP.get(name)
+    if sprite_name is None:
+        return None
+    if not sprite_name.lower().endswith('.png'):
+        sprite_name += '.png'
+
+    cache_key = (name, scale)
+    if cache_key not in explore_sprites.cache:
+        sprite_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            'Images', 'Characters',
+            'exp_player.png' if name == 'Player' else sprite_name,
+        )
+        sprite = pygame.image.load(sprite_path).convert_alpha()
+        explore_sprites.cache[cache_key] = pygame.transform.scale(sprite, scale)
+    return explore_sprites.cache[cache_key]
+
+
+explore_sprites.cache = {}
+    
 
 #=====================================================================
 #Classes 
@@ -177,20 +217,19 @@ class button: #First button type for Menu class selection
     def is_clicked (self, pos):
         return self.rect.collidepoint(pos) #Collidepoint (on click)
 
-class MovesUI: #Second button type for battle UI
-    def __init__(self, x, y, width, height, move): #Class that sorts out unique moves for Sword, Wizard, and Archer, trigger from click/button
+#Second button type for battle UI
+class MovesUI: 
+    def __init__(self, x, y, width, height, move):
         self.rect = pygame.Rect(x, y, width, height)
         self.move = move
-        #self.CDfont = SmallFont #Cooldown will be shown on SOME move buttons 
 
     def draw(self, screen, CD = 0): 
-        color = clrDGrey if CD == 0 else clrDGrey #UI change Doesn't work
+        color = clrDGrey if CD == 0 else clrDGrey #UI change Doesn't work - debug
         pygame.draw.rect(screen, color, self.rect)
-        #draw moves
         Textscreen = Font.render(self.move.name, True, clrWhite)
         Textrender = Textscreen.get_rect(center = self.rect.center)
         screen.blit(Textscreen, Textrender)
-        #If CD > 0 - on cooldown 
+
         if CD > 0:
             cd_text = SmallFont.render(f"CD:{CD}", True, clrLRed) #Displays the cooldown turn timer
             cd_rect = cd_text.get_rect(topright = (self.rect.right-5, self.rect.top+5)) #On the top right
@@ -205,6 +244,7 @@ class Move: #store name, damage, and move name for the movesets below
         self.damage = damage 
         self.cooldown = cooldown
 
+#Player class
 class Character: #Health, damage, and other variables needed for battle
     def __init__(self, name: str, health: int, moves) -> None: #realization: very similar to what I did in Unity (C-Sharp)
         self.name = name #Wizard, Sword, Archer, Eye
@@ -240,7 +280,17 @@ class Character: #Health, damage, and other variables needed for battle
     def move_ready(self, index):
         return self.move_CDs[index] == 0
 
-class HealthBar: #Same class, work on player and enemy
+#Enemy class (explore stage only)
+class Enemy:
+    def __init__(self, x, y, enemy_type): # 5 enemies
+        self.x, self.y = x, y 
+        self.enemy_type = enemy_type
+        self.image = explore_sprites(enemy_type) #Create explore screen sprites
+        self.speed = 1 #Move speed
+        #self.xp_value = 5 #player is expected to recieve xp after 'Battle' screen ends
+        
+
+class HealthBar: #Display purpose only, Same class, work on player and enemy
     def __init__(self, x, y, width, height, max_hp):
         self.x = x
         self.y = y
@@ -381,8 +431,8 @@ class inventory_UI():
         #attributes that were never created -> AttributeError the moment the
         #dungeon tried to draw itself
         self.is_open = False
-        self.bag_closed = load_img('invclosed.png', (self.ICON, self.ICON))
-        self.bag_open = load_img('invopen.png', (self.ICON, self.ICON))
+        self.bag_closed = load_img('Images/Icons/invclosed.png', (self.ICON, self.ICON))
+        self.bag_open = load_img('Images/Icons/invopen.png', (self.ICON, self.ICON))
         #The icon sits ON TOP of the panel, hugging its left edge, so it stays
         #in the same place whether the panel is open or shut
         self.icon_rect = pygame.Rect(self.rect.left + 6,
@@ -423,7 +473,7 @@ class inventory_UI():
             y += 46      #Next row
 
     def toggle(self):
-        self.is_open = not self.is_open  #T/F
+        self.is_open = not self.is_open  #T/F of bag icon
 
     def use_button_at(self, pos):
         #Which item's USE button was clicked (None = the click missed them all)
@@ -441,27 +491,11 @@ class inventory_UI():
             screen.blit(self.bag_closed, self.icon_rect)
 
 #JSON inventory management
-#----------------------------------------------------------------------
-#The whole inventory is ONE dict, and that is deliberate: a dict of dicts is
-#already valid JSON, so saving is a single json.dump with no conversion step.
-#
-#   {"Health Potion": {"heal": 30, "quantity": 2}}
-#
-#Three rules that JSON forces on you, and that this class respects:
-#  1. JSON object keys are always strings. Item names are strings, fine - but
-#     never key a save file by an int and expect an int back.
-#  2. JSON has no tuples, no sets and no pygame objects. Only dict, list, str,
-#     int, float, bool and None survive the round trip. That is exactly why the
-#     item's SPRITE lives in ITEM_SPRITE_MAP and not in here.
-#  3. The file is written by you but read from a disk you do not control. It
-#     can be missing, empty, or half-written if the game was killed mid-save,
-#     so load() has to survive all three instead of crashing the game.
 class Inventory():
     def __init__(self, filename = INVENTORY_FILE):
         self.filename = filename
         self.items = {}     #name -> {"quantity": n, plus whatever ITEM_EFFECTS says}
 
-    #--- contents ------------------------------------------------------
     def add_item(self, name, quantity = 1):
         if name in self.items:
             self.items[name]["quantity"] += quantity    #Stack, don't duplicate
@@ -499,7 +533,6 @@ class Inventory():
         self.items = {}
         self.save()
 
-    #--- disk ----------------------------------------------------------
     def save(self):
         #indent=2 keeps inventory.json readable, so you can open it and see
         #exactly what the game thinks you are carrying
@@ -716,10 +749,6 @@ def generate_dungeon(config = None, seed = None):
     dungeon.seed = seed
     dungeon.rng = rng   #Kept on the floor so enemy spawns share this stream
 
-    # 1 + 2 - solid rock, then rooms
-    #if cfg["algorithm"] == "random":
-    #    place_rooms_random(dungeon, rng, cfg)
-    #else:
     place_rooms_bsp(dungeon, rng, cfg)
 
     if not dungeon.rooms:                  # paranoia: a config with huge rooms on
@@ -780,8 +809,7 @@ def ascii_render(dungeon):
 # LOAD ASSETS
 #----------------------------------------------------------------------
 # load Menu, Battle background
-# Load character cards and battle sprites
-
+# Load character Selection cards and battle sprites
 
 #Asset loader - purely to make the asset loading process easier
 def load_img(png, scale = None):
@@ -791,24 +819,26 @@ def load_img(png, scale = None):
     return img
 
 #BGs
-BGmenu = load_img('BGselect.png', (WIDTH, HEIGHT))
-BGBattle = load_img('BGBattle.png', (WIDTH, HEIGHT))
+BGmenu = load_img('Images/Backgrounds/BGselect.png', (WIDTH, HEIGHT))
+BGBattle = load_img('Images/Backgrounds/BGBattle.png', (WIDTH, HEIGHT))
 
 #Class files (select stage) | Char cards = Character files + asset_dict --> card_grid = Char_cards + Cards (class) --> class_cards (destination)
-character_files = ["Sword.png", "Wizard.png", "Archer.png"]
+character_files = ["Images/Characters/Sword.png", "Images/Characters/Wizard.png", "Images/Characters/Archer.png"]
 Char_cards = {} 
 for file in character_files:
-    name = file.split('.')[0]           #Removes '.' and everything after from file string 
-    Char_cards[name] = load_img(file, (260, 260))
+    name = file.split('.')[0].split('/')[-1]        #Removes '.' and everything after from file string 
+    Char_cards[name] = load_img(file, (260, 260))   #[-1] grabs the name that we want 
     print(f"Loaded: {name}")            #print check in terminal 
 
 #Class files (Battle Stage)
 Battle_files = {
-    "Sword": load_img("SwordBattle.png", (300, 400)), 
-    "Wizard": load_img("WizardBattle.png", (300, 400)),
-    "Archer": load_img("ArcherBattle.png", (300, 400))}
-Enemy_img = load_img('Eye.png', (250, 350))
+    "Sword": load_img("Images/Characters/SwordBattle.png", (300, 400)), 
+    "Wizard": load_img("Images/Characters/WizardBattle.png", (300, 400)),
+    "Archer": load_img("Images/Characters/ArcherBattle.png", (300, 400))
+    }
+Enemy_img = load_img('Images/Characters/Eye.png', (250, 350))
 
+#Format of selection stage
 def card_grid (names, start_x, start_y, spacing_x, spacing_y, width = 260, height = 260):  
     cards = []
     cols = 3 #2 is very ugly
@@ -841,7 +871,6 @@ class_cards = card_grid(
 # Moves are stored in lists (name, dmg, cooldown)
 # One animation per class (reduce time spent animating but each class will still have unique animations)
 
-#Sword moves
 Sword_moves = [ 
     Move('Slash', 15, 0), #Basic Attack
     Move('Ground Slam', 30, 2), #Planned stat effect and CD
@@ -849,7 +878,6 @@ Sword_moves = [
     Move('180 Pound', 35, 3) #CD
 ]
 
-#Wizard moves
 Wizard_moves = [ 
     Move('Magic Missile', 20, 0), #Basic Attack
     Move('Frost Beam', 25, 2), #Planned stat effect Short CD
@@ -857,7 +885,6 @@ Wizard_moves = [
     Move('FIREBALL', 30, 3) #Planned stat effect and CD
 ]
 
-#Archer moves
 Archer_moves = [ 
     Move('Quick Fire', 20, 0), #Basic Attack
     Move('Rain of Arrows', 30, 2), #Short CD
@@ -865,13 +892,16 @@ Archer_moves = [
     Move('Thunder Snipe', 40, 3) #Planned stat effect and CD
 ]
 
-#Boss/EnEemy moves,  too many stat effects planned but im lazy to design them
 Eye_moves = [ 
     Move('Bloodshot Gaze', 30, 0), #High base attack
     Move('illusory Realm', -20, 2), #Planned stat effect
     Move('Confusion', 0, 0), #Planned stat effect
     Move('Amaterasu', 10, 3) #Planned stat effect and CD
 ]
+
+ENEMY_BATTLE_DATA = {
+    'Eye': {'health': 80, 'moves': Eye_moves},
+}
 #=====================================================================
 # Pre-gameloop variables
 #----------------------------------------------------------------------
@@ -904,8 +934,8 @@ Explore = False         #Dungeon exploration
 Battle = False
 Stats = False           #Must change in gameloop as player has a new objective
 
-player = None           #Sword, Wizard, or Archer 
-enemy = None            #Eye dude
+player = None           
+enemy = None            
 player_anim = None
 enemy_anim = None
 Move_Buttons = []       #Store moveset of chosen char
@@ -913,6 +943,10 @@ turn = 'player'         #Turn based combat - turn starts with player
 enemy_acted = False     #prevents enemy from attacking every frame
 Message = ''            #Screen terminal
 Selected_class = None   #player
+#player_attack bool variables that will help prevent the player
+#from spamming and allows animations to run one at a time.
+player_attack_start = None
+player_attack_move = None
 #The bag. Inv (above) is the PANEL that draws it; this is the DATA that gets
 #written to inventory.json. Inv.is_open is the single open/closed flag - a
 #separate inv_open global was a second source of truth waiting to disagree.
@@ -930,7 +964,7 @@ dungeon = None          #The current Dungeon instance (generate_dungeon() output
 dungeon_level = 1       #Floor number, goes up every time the stairs are used
 player_tile = (0, 0)    #Player position in TILES (not pixels)
 dungeon_enemies = []    #[{'x':.., 'y':.., 'name':'Eye'}, ...] eyeballs on this floor
-dungeon_items = []
+dungeon_items = []      #Stores # of items on the map, not in the inventory
 current_encounter = None#The enemy dict that started the fight we are in 
 
 
@@ -948,7 +982,7 @@ def cycle(cfg, field, values):
 
 
 #=====================================================================
-#Dungeon exploration
+#Dungeon exploration functions
 #----------------------------------------------------------------------
 #spawn_enemies()  - one roll per room, using the floor's OWN seeded rng so the
 #                   same seed gives the same monsters as well as the same map
@@ -963,22 +997,19 @@ def cycle(cfg, field, values):
 #======================================================================
 
 def spawn_enemies(dungeon, cfg):
-    #Room 0 is skipped: spawning an eyeball on top of the player is not a fight,
-    #it is an ambush the player never agreed to
     enemies = []
-    for room in dungeon.rooms[1:]:
+    enemy_type = next(iter(ENEMY_SPRITE_MAP))
+    for room in dungeon.rooms[1:]: #Skip room 0
         if dungeon.rng.random() < cfg['enemy_chance']:
             x, y = room.random_spot(dungeon.rng)
             if (x, y) != dungeon.start and (x, y) != dungeon.exit:
-                enemies.append({'x': x, 'y': y, 'name': 'Eye'})
-    return enemies
+                enemies.append({'x': x, 'y': y, 'name': enemy_type})
+    return enemies #Return # of enemies 
 
 def spawn_items(dungeon, cfg):
     items = []
     for room in dungeon.rooms[1:]:
         if dungeon.rng.random() < cfg['item_chance']:
-            #dungeon.rng, NOT random: the floor's own seeded stream, so one
-            #seed reproduces the loot as well as the map and the monsters
             item_type = dungeon.rng.choice(list(ITEM_SPRITE_MAP.keys()))
             x, y = room.random_spot(dungeon.rng)
             if (x, y) != dungeon.start and (x, y) != dungeon.exit:
@@ -1008,12 +1039,14 @@ def enter_dungeon(level = 1):
     print(f'--- floor {dungeon_level}, seed {dungeon.seed} ---')
     print(ascii_render(dungeon))                #Terminal check, same as always
 
+#define enemy coordinates
 def enemy_at(x, y):
     for foe in dungeon_enemies:
         if foe['x'] == x and foe['y'] == y:
             return foe
     return None
 
+#Define item coordinates
 def item_at(x, y):
     for i in dungeon_items:
         if i['x'] == x and i['y'] == y:
@@ -1024,34 +1057,76 @@ def move_player(dx, dy):
     global player_tile, Message
     x, y = player_tile[0] + dx, player_tile[1] + dy
 
-    if not dungeon.is_walkable(x, y):   #Walls stop you. The generator promised
-        return                          #every floor tile is reachable, so this
-                                        #is the ONLY movement rule needed here
+    if not dungeon.is_walkable(x, y):   #Walls
+        return                          
+                                        
     player_tile = (x, y)
 
     foe = enemy_at(x, y)
     if foe:
-        start_battle(foe)               #Dungeon -> Battle
+        start_battle(foe)               
         return
 
-    #Green tile -> straight into the bag, and straight into inventory.json.
-    #Picking up is the only place items ENTER the inventory, so it is the only
-    #place that has to remove them from the floor.
     loot = item_at(x, y)
     if loot:
-        dungeon_items.remove(loot)      #Off the floor...
-        Message = inventory.add_item(loot['name'])  #...and into the JSON
+        dungeon_items.remove(loot)      
+        Message = inventory.add_item(loot['name'])  
 
-    if dungeon.tiles[x][y] == EXIT:     #Stairs -> next floor, deeper and fresh
+    if dungeon.tiles[x][y] == EXIT:     
         enter_dungeon(dungeon_level + 1)
+        return
 
-#Define offset for camera func
+    move_enemy()
+
+def move_enemy():
+    """Move each exploration enemy one walkable tile toward the player."""
+    occupied = {(foe['x'], foe['y']) for foe in dungeon_enemies}
+    directions = ((1, 0), (-1, 0), (0, 1), (0, -1))
+    fov_radius = GEN_CONFIG['enemy_fov_radius']
+
+    for foe in dungeon_enemies:
+        start = (foe['x'], foe['y'])
+        occupied.discard(start)
+
+        distance = abs(start[0] - player_tile[0]) + abs(start[1] - player_tile[1])
+        if distance > fov_radius:
+            occupied.add(start)
+            continue
+
+        queue = [start]
+        previous = {start: None}
+
+        while queue and player_tile not in previous:
+            current_x, current_y = queue.pop(0)
+            for step_x, step_y in directions:
+                next_tile = (current_x + step_x, current_y + step_y)
+                if next_tile in previous or not dungeon.is_walkable(*next_tile):
+                    continue
+                if next_tile in occupied and next_tile != player_tile:
+                    continue
+                previous[next_tile] = (current_x, current_y)
+                queue.append(next_tile)
+
+        if player_tile not in previous:
+            occupied.add(start)
+            continue
+
+        next_tile = player_tile
+        while previous[next_tile] != start:
+            next_tile = previous[next_tile]
+        if next_tile != player_tile and next_tile not in occupied:
+            foe['x'], foe['y'] = next_tile
+            occupied.add(next_tile)
+        else:
+            occupied.add(start)
+
+#Camera Offset
 def tile_rect(x, y, tile_px = TILE_SIZE, offset_x = MAP_OFF_X, offset_y = MAP_OFF_Y):
     return pygame.Rect(offset_x + x * tile_px, offset_y + y * tile_px,
                        tile_px, tile_px)
 
 
-#FOV view only 8 tile radius of the player
+#Player FOV
 def fov_tiles(dungeon, player_tile, radius = 8):
     visible = set()
     px, py = player_tile
@@ -1077,81 +1152,63 @@ def camera_offset(player_tile, tile_px):
 
 
 def draw_dungeon(screen, dungeon, tile_px):
-    #PLACEHOLDER ART. Every tile is a flat rect, so the generator can be judged
-    #on its own before any sprite work happens.
-    #TODO(you): minifigure sprites instead of the two rects below
-    #TODO(you): camera - draw only the tiles around player_tile and offset them,
-    #           instead of blitting the whole 40x30 floor every frame
 
     visible = fov_tiles(dungeon, player_tile)
     offset_x, offset_y = camera_offset(player_tile, tile_px)
 
     for x, y in visible:
-        rect = pygame.Rect(             #Draw tiles in 8 radius FOV range
-            x * tile_px + offset_x,     #Offset to scale the tiles
+        rect = pygame.Rect(             
+            x * tile_px + offset_x,     
             y * tile_px + offset_y,
             tile_px,
             tile_px
         )
-        pygame.draw.rect(screen, TILE_COLORS[dungeon.tiles[x][y]], rect)
+        pygame.draw.rect(screen, TILE_COLORS[dungeon.tiles[x][y]], rect) 
 
-    for foe in dungeon_enemies:             #Eyeballs
+    for foe in dungeon_enemies:
         if (foe['x'], foe['y']) in visible:
-            pygame.draw.rect(screen, clrLRed,
-                tile_rect(foe['x'], foe['y'], tile_px, offset_x, offset_y).inflate(-6, -6))
+            sprite = explore_sprites(foe['name'], tile_px)
+            if sprite:
+                rect = tile_rect(foe['x'], foe['y'], tile_px, offset_x, offset_y)
+                screen.blit(sprite, sprite.get_rect(center=rect.center))
 
     for i in dungeon_items:
         if (i['x'], i['y']) in visible:
             pygame.draw.rect(screen, clrGreen, 
                 tile_rect(i['x'], i['y'], tile_px, offset_x, offset_y).inflate(-6, -6))
 
-    pygame.draw.rect(screen, clrWhite,
-        tile_rect(player_tile[0], player_tile[1], tile_px, offset_x, offset_y).inflate(-8, -8))
+    player_sprite = explore_sprites('Player', tile_px)
+    player_rect = tile_rect(player_tile[0], player_tile[1], tile_px, offset_x, offset_y)
+    screen.blit(player_sprite, player_sprite.get_rect(center=player_rect.center))
 
-    #for x in range(dungeon.width):
-    #    for y in range(dungeon.height):
-    #       if (x, y) in visible:
-    #        pygame.draw.rect(screen, TILE_COLORS[dungeon.tiles[x][y]],
-    #                            tile_rect(x, y, tile_px))
-
-    #for foe in dungeon_enemies:             #Eyeballs
-    #    if (foe['x'], foe['y']) in visible:
-    #        pygame.draw.rect(screen, clrLRed,
-    #                        tile_rect(foe['x'], foe['y'], tile_px).inflate(-6, -6))
-
-    #pygame.draw.rect(screen, clrWhite,      #The player
-    #                 tile_rect(player_tile[0], player_tile[1], tile_px).inflate(-8, -8))
-
-    #Bare-minimum HUD so the floor is playable
-    #TODO(you): this is where the real dungeon UI and the inventory go
+    #Bare-minimum HUD 
     hud = SmallFont.render(
         f'Floor {dungeon_level}   {player.name}  HP {player.health}/{player.health_max}   '
-        f'Eyes left: {len(dungeon_enemies)}   [E] bag', True, clrWhite)
+        f'Enemies left: {len(dungeon_enemies)}   [E] bag', True, clrWhite)
     screen.blit(hud, (MAP_OFF_X + 8, 8))
     note = SmallFont.render(Message, True, clrWhite)
     screen.blit(note, (MAP_OFF_X + 8, HEIGHT - 32))
 
 def create_player(class_name):
-    #Runs once, when a card is clicked on the selection screen
+    #Runs once
     global player, player_anim, player_hpbar, Selected_class
     global dmg_dealt, dmg_taken, battles_won, Battle_won
 
-    dmg_dealt = 0 #start as 0
+    dmg_dealt = 0 
     dmg_taken = 0
     battles_won = 0
     Battle_won = False
     Selected_class = class_name
 
-    #One switch decides whether the save file is a real save file
+    #If False - Every run starts with an empty bag
     if INVENTORY_PERSISTS:
-        print(inventory.load())     #Carry potions in from the last session
+        print(inventory.load())     
     else:
-        inventory.clear()           #Every run starts with an empty bag
+        inventory.clear()           
 
-    #class_name means the selected class from selection screen
-    #No take backs or confirmation screen
+    #Name, maxhealth, move list (index)
     if class_name == 'Sword':
-        player = Character("Sword", 110, Sword_moves) #Name, maxhealth, move list - movelist is referenced using index
+        player = Character("Sword", 110, Sword_moves) 
         player_hpbar = HealthBar(150, 150, 200, 40, 110)
     elif class_name == 'Wizard':
         player = Character("Wizard", 100, Wizard_moves)
@@ -1197,10 +1254,10 @@ def load_gif(file):
 
 
 ATTACK_ANIMATION_FILES = {
-    'Sword': 'SwordAnim.gif',
+    'Sword': 'Images/Anims/SwordAnim.gif',
     'Wizard': None,
     'Archer': None,
-    'Eye': 'EyeAnim.gif',
+    'Eye': 'Images/Anims/EyeAnim.gif',
 }
 
 
@@ -1218,23 +1275,20 @@ def start_battle(encounter):
 
     current_encounter = encounter
 
-    #Initilize the enemy
-    enemy = Character('Eye', 80, Eye_moves)
-    enemy_anim = create_attack_animation('Eye')
-    enemy_hpbar = HealthBar(WIDTH - 365, 75, 200, 40, 80)
-    enemy_hpbar.set_char('Eye')
-    #Generate MovesUI - one moveset - four moves, four buttons
-    #Horizontal spacing by 250 px and vertical spacing by 70
-    #two moves per row, two rows
-    Move_Buttons = [] #Reset the list (Rematch)
+    #Enemy data
+    enemy_type = encounter['name']
+    enemy_data = ENEMY_BATTLE_DATA[enemy_type]
+    enemy = Character(enemy_type, enemy_data['health'], enemy_data['moves'])
+    enemy_anim = create_attack_animation(enemy_type)
+    enemy_hpbar = HealthBar(WIDTH - 365, 75, 200, 40, enemy_data['health'])
+    enemy_hpbar.set_char(enemy_type)
+
+    Move_Buttons = [] #Reset
     for i, move in enumerate(player.moves):
         x = 200 + (i % 2) * 500 
         y = 550 + (i // 2) * 70
-         #New list that contains the moves from either Sword, wizard, or archer
         Move_Buttons.append(MovesUI(x, y, 220, 50, move)) 
 
-    #Fresh cooldowns every fight, but NOT fresh health: damage carries between
-    #rooms, and that is what makes exploring a risk
     player.reset_CD()
 
     Battle = True
@@ -1246,14 +1300,18 @@ def start_battle(encounter):
     #Print check
     Message = (f"{player.name} vs {enemy.name}")#, player's turn!") 
     print(Message) # terminal
-    
+
 def player_atk(move_index): #Function for player attack ONLY
     global Message, Battle, turn, enemy_acted, Stats, Battle_won, dmg_dealt
+    global player_attack_start, player_attack_move
     global Explore, battles_won, current_encounter
     global player_anim
     move = player.use_move(move_index) #i
     if move is None:
         return
+
+    player_attack_move = move #Carries the selected index to run in player_move_update()
+    player_attack_start = pygame.time.get_ticks()
 
     if player_anim is not None:
         if Selected_class == "Sword" and move_index != 2: #Guard does not have anim
@@ -1262,7 +1320,8 @@ def player_atk(move_index): #Function for player attack ONLY
                 (WIDTH // 2 + 300, HEIGHT - 400),
             )
 
-
+    turn = 'player_anim'
+    '''
     dmg = move.damage
     if dmg > 0: #Player Attack
         enemy.health -= dmg
@@ -1284,20 +1343,64 @@ def player_atk(move_index): #Function for player attack ONLY
         Explore = True
     else:
         turn = 'enemy'
-        enemy_acted = False #Enemy can act next frame
+        enemy_acted = False #Enemy can act next frame'''
+
+#call this function every frame - 1000 tick 1 sec 
+def player_move_update():
+    global player_attack_move, player_attack_start
+    global Message, Battle, turn, enemy_acted, Stats, Battle_won, dmg_dealt
+    global Explore, battles_won, current_encounter
+    global player_anim
+
+    if player_attack_start is None:
+        return
+
+    passed  = pygame.time.get_ticks() - player_attack_start
+
+    if passed >= 1000:
+        move = player_attack_move
+
+        dmg = move.damage
+        if dmg > 0: #Player Attack
+            enemy.health -= dmg
+            dmg_dealt += dmg
+            Message = (f'{move.name} dealt {dmg} damage!')
+        elif dmg < 0: #Player Heal (Negative damage -dmg)
+                player.health = min(player.health_max, player.health - dmg) #Max health becomes the ceiling, cant heal more than 100 hp
+                Message = (f'{move.name} healed {dmg} HP!')
+
+        #Reset attack state
+        player_attack_move = None
+        player_attack_start = None
+
+        #Enemy death check
+        if enemy.health <= 0:
+            Battle_won = True
+            battles_won += 1
+            if current_encounter in dungeon_enemies:
+                dungeon_enemies.remove(current_encounter)  #It stays dead when we
+            current_encounter = None                       #walk over that tile again
+            Message = (f"{enemy.name} got cooked. HP {player.health}/{player.health_max}")
+            Battle = False   #Win -> straight back to the floor, wounds and all
+            Explore = True
+        else:
+            turn = 'enemy'
+            enemy_acted = False #Enemy can act next frame
+
+
 
 def enemy_atk():
     global Message, turn, Battle, Battle_won, Stats, enemy_acted, dmg_taken, Explore
     global enemy_anim
     #Finding which moves the enemy can currently use, since enemy also has some moves with CD
-    Ready_or_not = [i for i, cd in enumerate(enemy.move_CDs) if cd == 0] #HERE I COME
-    if not Ready_or_not: #Incase the enemy randomly chooses a move that is in CD, cause choosing from an empty list will crash
+    RandMove = [i for i, cd in enumerate(enemy.move_CDs) if cd == 0] #
+    if not RandMove: #Incase the enemy randomly chooses a move that is in CD, cause choosing from an empty list will crash
         enemy.dec_CDs()
         turn = 'player'
         Message = 'Enemy is waiting...'
         return
     
-    idx = random.choice(Ready_or_not)
+    idx = random.choice(RandMove)
     enemove = enemy.use_move(idx)
     if idx == 0 and enemy_anim is not None: #Only bloodshot gaze should have a projectile
         enemy_anim.start(
@@ -1384,8 +1487,8 @@ while Rungame:
                 pos = pygame.mouse.get_pos()
                 for card in class_cards:
                     if card.is_clicked(pos):
-                        create_player(card.name)    #Build the class...
-                        enter_dungeon(1)            #...then drop it on floor 1
+                        create_player(card.name)    #Build the class
+                        enter_dungeon(1)            #Drop player on floor 1
                         break
 
         #Trigger after selection screen. Return to this screen after every
@@ -1436,7 +1539,9 @@ while Rungame:
                 elif Quit.is_clicked(pos):
                     Rungame = False
 
-    #Enemy attack logic
+    #Enemy attack logic (following 3 second duration)
+    if Battle:
+        player_move_update()
     if Battle and turn == 'enemy' and not enemy_acted and enemy.alive():
             enemy_atk()
 
@@ -1469,7 +1574,7 @@ while Rungame:
         screen.fill(clrBlack)               #Wipe FIRST. Drawing the icon before
         draw_dungeon(screen, dungeon, TILE_SIZE)    #the fill just erased it
         if Inv.is_open:
-            Inv.draw(screen, inventory)     #Panel with a USE button per row
+            Inv.draw(screen, inventory)     #Inv Panel with a USE button per row
         Inv.drawicon(screen)                #Icon last, so it sits on top
 
     elif Battle:
