@@ -2,5 +2,3 @@
 __pycache__/
 *.pyc
 
-# Inventory save file (generated at runtime)
-inventory.json
