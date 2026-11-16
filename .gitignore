@@ -6,6 +6,11 @@ __pycache__/
 savegame.json
 inventory.json
 
+# Old prototypes and backups
+Prototypes/
+ClassGame/
+backupfile.py
+
 # Editor / OS junk
 .vscode/
 .idea/
