@@ -2,6 +2,17 @@
 __pycache__/
 *.pyc
 
-
 # Save file (created at runtime in AppData)
 savegame.json
+inventory.json
+
+# Editor / OS junk
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# Builds, when you package for itch.io
+build/
+dist/
+*.spec
