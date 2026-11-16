@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 
+
+# Save file (created at runtime in AppData)
+savegame.json
