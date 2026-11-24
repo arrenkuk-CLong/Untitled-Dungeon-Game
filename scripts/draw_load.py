@@ -80,7 +80,9 @@ def load_img(png, scale = None):
     return img
 
 #BGs
-BGmenu = load_img(asset('Backgrounds', 'BGselect.png'), (WIDTH, HEIGHT))
+#BGmenu = load_img(asset('Backgrounds', 'BGselect.png'), (WIDTH, HEIGHT))
+BGmenu = load_img(asset('Backgrounds', 'cryptlandscape_light.jpeg'), (WIDTH, HEIGHT))
+BGselect = load_img(asset('Backgrounds', 'cryptlandscape.jpeg'), (WIDTH, HEIGHT))
 BGBattle = load_img(asset('Backgrounds', 'BGBattle.png'), (WIDTH, HEIGHT))
 
 #HUD
@@ -122,7 +124,11 @@ IDLE_ANIMATION_FILES = {
     'Sword': asset('Characters', 'Sword_Idle.gif'),
     'Wizard': asset('Characters', 'Wizard_Idle.gif'),
     'Archer': asset('Characters', 'Archer_Idle.gif'),
-    'Eye': asset('Characters', 'Eye_Idle.gif')
+    'Eye': asset('Characters', 'Eye_Idle.gif'),
+    'Skeleton': asset('Characters', 'Skeleton_Idle.gif'),
+    'Wraith': asset('Characters', 'Wraith_Idle.gif'),
+    'Fallen': asset('Characters', 'Fallen_Idle.gif'),
+    'Judgement': asset('Characters', 'Judgement_Idle.gif')
 }
 
 #Load Effects icons.

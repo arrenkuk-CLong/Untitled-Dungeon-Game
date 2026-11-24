@@ -32,13 +32,25 @@ ITEM_SPRITE_MAP = {
     #"Ring of Regeneration": "armor",
 }
 
-#Enemies (Explore State)
+#Enemies (Explore State), 
 ENEMY_SPRITE_MAP = {
     "Eye": "Mini_Eye.png",          #Wolf level
     "Skeleton": "Mini_Skele.png",   #Tiger level
-    "Ghoul": "Mini_Ghoul.png",      #Demon level - resistant against Physical attacks
-    "Fallen": "Mini_Fallen.png",    #Demon level - resistant against magic attacks
-    "Wraith": "Mini_Wraith.png"     #Dragon level - resistant against both, spawns on the tenth floor. Larger size (maybe 64 x 64) 
+    "Wraith": "Mini_Wraith.png",      #Demon level - resistant against Physical attacks
+    "Fallen": "Mini_Fallen.png"    #Demon level - resistant against magic attacks
+}
+
+#Enemy spawn chance #weighted to spawn chance: 0.6
+ENEMY_SPAWN_WEIGHTS = {
+    'Eye' : 50,
+    'Skeleton' : 30,
+    'Wraith' : 15,
+    'Fallen' : 10
+}
+
+
+BOSS_SPRITE = {
+    "Judgement": "Mini_Judgement.png"     #Dragon level - resistant against both, spawns on the tenth floor. Larger size (maybe 64 x 64) 
 }
 
 PLAYER_SPRITE_MAP = {

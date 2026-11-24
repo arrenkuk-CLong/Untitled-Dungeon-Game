@@ -1,7 +1,7 @@
 #dungeon
 #dungeon
 import random
-from scripts.config import GEN_CONFIG, ITEM_SPRITE_MAP, ENEMY_SPRITE_MAP
+from scripts.config import GEN_CONFIG, ITEM_SPRITE_MAP, ENEMY_SPRITE_MAP, ENEMY_SPAWN_WEIGHTS
 
 WALL = 1 
 FLOOR = 0  
@@ -290,7 +290,7 @@ def generate_dungeon(config = None, seed = None):
     distances = flood_fill(dungeon, dungeon.start)
 
     if cfg["prune_unreachable"]:
-        # Anything BFS never touched is an island. Fill it back in with rock:
+        # Anything BFS never touched is an island. Fill it back in with rock: 
         # a room the player can see but can't enter reads as a bug, not mystery.
         for x in range(dungeon.width):
             for y in range(dungeon.height):
@@ -328,12 +328,16 @@ def generate_dungeon(config = None, seed = None):
 #Placing Enemies and items
 #spawn_enemies()  - one roll per room, using the floor's OWN seeded rng so the
 #                   same seed gives the same monsters as well as the same map
-#(Special events & bosses soon)
+
 def spawn_enemies(dungeon, cfg):
     enemies = []
-    enemy_type = next(iter(ENEMY_SPRITE_MAP))
+    #enemy_type = next(iter(ENEMY_SPRITE_MAP))
     for room in dungeon.rooms[1:]: #Skip room 0
         if dungeon.rng.random() < cfg['enemy_chance']:
+            enemy_names = list(ENEMY_SPRITE_MAP)
+            enemy_type = dungeon.rng.choices(enemy_names, 
+                                     weights = [ENEMY_SPAWN_WEIGHTS[name] for name in enemy_names],
+                                     k=1,)[0] #one selection, string
             x, y = room.random_spot(dungeon.rng)
             if (x, y) != dungeon.start and (x, y) != dungeon.exit:
                 enemies.append({'x': x, 'y': y, 'name': enemy_type})

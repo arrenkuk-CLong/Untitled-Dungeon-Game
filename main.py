@@ -21,17 +21,18 @@
 #TODO Map Shadows & FOV (masking)
 #TODO Bresenham line algorihtm (basic raycasting)
 #TODO Redraw Battle (character and enemy) assets (96x96 normal sprites, 128 x 128 bosses)
-#---------------------------------------------------------------------------------- 
-#TODO Four more enemy types and a boss + assets
-#TODO Improve Battle HUD
-#TODO Map lighitng (glows)
-#TODO Add win condition (Average Campaign) #Due 22nd Midnight
 #TODO add Menu/leave game screen
-#----------------------------------------------------------------------------------
+#TODO Four more enemy types and a boss + assets
+#---------------------------------------------------------------------------------- Finished
+#TODO Improve Battle HUD
+#TODO Map lighiting (lamp glows)
+#TODO Add win condition & ending: ten floors, too much gems or too many kills + Boss spawn trigger
+#TODO add menu/settings
 #TODO Make Remaining assets: attack animations mostly
-#TODO Remake Assets (if needed)
-#TODO Fix visual bugs: #Set health bar value (on reloading a save) | game message damage without considering multipliers. | Inventory doesn't reset on death | Enemy keeps playing the same move (no cd?)
-#TODO Do remaining stat effects
+#TODO Implement McGill GameJam's advice
+#---------------------------------------------------------------------------------- Due 27th 
+#TODO Fix minor bugs: #Set health bar value (on reloading a save) | game message damage without considering multipliers. | Inventory doesn't reset on death | Enemy keeps playing the same move (no cd?) | Quit empties inventory but Rematch doesnt
+#TODO Do remaining stat effects (most the cc ones)
 #TODO Sound and music (I guess bro)
 #TODO Improve visuals and polish (add fallback?)
 #TODO Polish UI
@@ -318,8 +319,8 @@ while Rungame:
         screen.blit(title_text, (430, 150))
 
     elif game.state == State.slots:
-        screen.fill(draw_load.Color['Black'])
-        #runslot.draw(screen)
+        #screen.fill(draw_load.Color['Black'])
+        screen.blit(draw_load.BGselect, (0, 0))
         HeadTxt = draw_load.Font.render("RUN SLOTS", True, draw_load.Color['White'])
         screen.blit(HeadTxt, (450, 150))
         for slot in ui.slot_buttons:
