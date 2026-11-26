@@ -74,8 +74,10 @@ exp_bar = ui.XPBAR(50, 650)
 game = Game() #Literally the entire game loop
 
 
-#UI Testboxes
-#Box1 = ui.TestRect(50, 600, 250, 40, draw_load.Color['DGrey'])#Health and Power (250 x 40)
+#Battle HUD layout lives in ui.py (TURN_BOX, MSG_BOX, ENEMY_BOX, PLAYER_BOX
+#use the old Box2-Box5 test rectangles)
+
+
 
 
 #Explain this
@@ -253,12 +255,15 @@ while Rungame:
 
         #breaks every turn after the player has chosen a move.
         elif game.state == State.Battle:
-            if game.turn == 'player' and event.type == pygame.MOUSEBUTTONDOWN:
-                pos = pygame.mouse.get_pos()
-                for btn in (game.move_buttons): #Moves with CD = 0
-                    if btn.clicked(pos) and game.player.move_ready(btn.move_index):
-                        battle.player_atk(game, btn.move_index) #With that specific index move
-                        break
+            if game.turn == 'player':
+                chosen = None
+                if event.type == pygame.MOUSEBUTTONDOWN:
+                    pos = pygame.mouse.get_pos()
+                    chosen = next((btn for btn in game.move_buttons if btn.clicked(pos)), None)
+                elif event.type == pygame.KEYDOWN:              #WASD / arrow keys
+                    chosen = ui.move_for_key(game.move_buttons, event.key)
+                if chosen and chosen.usable(game.player):       #unlocked and CD = 0
+                    battle.player_atk(game, chosen.move_index)
 
         elif game.state == State.Stats:
             if event.type == pygame.MOUSEBUTTONDOWN:
@@ -366,11 +371,6 @@ while Rungame:
         #Draw battle background
         screen.blit(draw_load.BGBattle, (0, 0))
 
-        #Turn number, used mainly for DOT effect tracking
-        turn_txt = draw_load.Font.render(f'Turn {game.turn_num}', True, draw_load.Color['DDGrey'])
-        screen.blit(turn_txt, (100, 400))
-
-
         #player idle
         if game.player_idle_anim:
             screen.blit(game.player_idle_anim.image, game.player_idle_anim.rect)
@@ -384,27 +384,11 @@ while Rungame:
         if game.enemy_anim is not None and game.enemy_anim.active:
             screen.blit(game.enemy_anim.image, game.enemy_anim.rect)
 
-        #Draw health bars
-        if game.player_hpbar:
-            game.player_hpbar.draw_hp(screen, 150, 150, game.player.health, game.player.health_max)
-            if game.player_effects is not None:
-                game.player_effects.draw(screen, game.player)
+        #HUD: fog backdrop + WASD move diamond, then the plates
+        #(turn, message, enemy, player - HP bars and status effects inside)
+        ui.draw_move_panel(screen, game, draw_load.BattleFog)
+        ui.draw_battle_hud(screen, game)
 
-        if game.enemy_hpbar:
-            game.enemy_hpbar.draw_hp(screen, WIDTH - 365, 75, game.enemy.health, game.enemy.health_max)
-            if game.enemy_effects is not None:
-                game.enemy_effects.draw(screen, game.enemy)
-
-        #Draw Message
-        message_surf = draw_load.Font.render(game.message, True, draw_load.Color['DDGrey'])
-        screen.blit(message_surf, (WIDTH//2 - message_surf.get_width()//2, 50)) #x, y
-
-        #Draw move buttons only on player's turn
-        if game.turn == 'player':
-            pygame.draw.rect(screen, draw_load.Color['DDGrey'], (100, 500, 900, 400))
-            for btn in (game.move_buttons):
-                btn.draw(screen, game.player.move_CDs[btn.move_index]) #Passes the Button drawing and the Cooldown # text
-    
     #Stats screen, post battle
     elif game.state == State.Stats:
         screen.fill(draw_load.Color['DGrey'])

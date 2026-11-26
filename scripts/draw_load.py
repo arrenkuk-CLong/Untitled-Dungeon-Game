@@ -87,9 +87,8 @@ BGBattle = load_img(asset('Backgrounds', 'BGBattle.png'), (WIDTH, HEIGHT))
 
 #HUD
 Navbar = load_img(asset('hud', 'NavBar.png'), (1080, 55))
-
-#FOV Fog:
-Fog = load_img(asset('hud', 'Fogfov.png'), (1080, 720)).convert_alpha()
+BattleFog = load_img(asset('hud', 'BattleFog.png'), (WIDTH, HEIGHT)).convert_alpha()
+BattleFog.set_alpha(170)    #semi transparent backdrop behind the move diamond
 
 
 #Load Class files
@@ -207,6 +206,11 @@ class Char_Animation(pygame.sprite.Sprite):
         self.frame_timer = pygame.time.get_ticks()
         self.pos = pygame.Vector2(pos)
         self.rect = self.image.get_rect(center=pos)
+
+    def start_on_ground(self, foot_x, ground_y):
+        pad = self.frames[0].get_height() - self.frames[0].get_bounding_rect().bottom
+        self.start((0, 0))
+        self.rect.midbottom = (foot_x, ground_y + pad)
 
     def update(self):
         if not self.active:

@@ -91,35 +91,158 @@ slot_buttons = slot_grid(
     height=260,
 )
 
-#Second button type for player battle UI 
-# blits the name of the move, rect, and CD text if move has an active CD
-# clicking returns a bool to trigger the player_atk() function through the
-# Move_Buttons list
-class MovesUI: 
-    def __init__(self, x, y, width, height, move):
-        self.rect = pygame.Rect(x, y, width, height)
+#=====================================================================
+#Battle HUD
+#----------------------------------------------------------------------
+#Semi transparent plates (same fill + border everywhere), laid out on the
+#old Box2-Box5 test rectangles:
+#   TURN_BOX   - turn counter, top left
+#   MSG_BOX    - system message, top centre
+#   ENEMY_BOX  - enemy name, HP bar, status effects (top right)
+#   PLAYER_BOX - class, level, HP bar + numbers, status effects (bottom left)
+#Moves sit in a WASD diamond bottom right, on top of the BattleFog backdrop.
+#======================================================================
+HUD_FILL = (14, 12, 28, 200)       #near black purple, semi transparent
+HUD_EDGE = (150, 142, 186)         #lavender border (same as the fog)
+HUD_TEXT = (230, 226, 240)
+HUD_DIM = (150, 142, 186)
+HUD_GLOW = (124, 221, 187)         #cyan - move is ready
+HUD_DULL = (80, 76, 110)           #move is locked / cooling down
+
+TURN_BOX = pygame.Rect(25, 25, 125, 40)
+MSG_BOX = pygame.Rect(290, 25, 500, 32)
+ENEMY_BOX = pygame.Rect(715, 75, 340, 110)
+PLAYER_BOX = pygame.Rect(25, 535, 380, 160)
+BOSSES = {'Judgement'}             #gets a BOSS tag instead of the floor number
+
+
+def draw_panel(screen, rect, fill = HUD_FILL, edge = HUD_EDGE, width = 2):
+    plate = pygame.Surface(rect.size, pygame.SRCALPHA)
+    plate.fill(fill)
+    screen.blit(plate, rect.topleft)
+    pygame.draw.rect(screen, edge, rect, width)
+
+
+def draw_battle_hud(screen, game):
+    #Turn counter (turn_num starts at 0)
+    draw_panel(screen, TURN_BOX)
+    turn = SmallFont.render(f"TURN {game.turn_num + 1}", True, HUD_TEXT)
+    screen.blit(turn, turn.get_rect(center = TURN_BOX.center))
+
+    #System message
+    draw_panel(screen, MSG_BOX)
+    msg = SmallFont.render(game.message, True, HUD_TEXT)
+    screen.blit(msg, msg.get_rect(center = MSG_BOX.center))
+
+    #Enemy plate: tag + name, HP bar, effects under the bar (inside the plate)
+    if game.enemy and game.enemy_hpbar:
+        box = ENEMY_BOX
+        draw_panel(screen, box)
+        tag = 'BOSS' if game.enemy.name in BOSSES else f'FLOOR {game.dungeon_level}'
+        tag_s = SmallFont.render(tag, True, HUD_DIM)
+        name_s = SmallFont.render(game.enemy.name.upper(), True, HUD_TEXT)
+        screen.blit(tag_s, (box.x + 12, box.y + 8))
+        screen.blit(name_s, name_s.get_rect(topright = (box.right - 12, box.y + 8)))
+        game.enemy_hpbar.draw_hp(screen, box.x + 12, box.y + 28,
+                                 game.enemy.health, game.enemy.health_max, label = False)
+        if game.enemy_effects is not None:
+            game.enemy_effects.draw(screen, game.enemy)
+
+    #Player plate: class + level, HP bar + numbers, effects under the bar
+    if game.player and game.player_hpbar:
+        box = PLAYER_BOX
+        draw_panel(screen, box)
+        name_s = SmallFont.render(game.player.name.upper(), True, HUD_TEXT)
+        lv_s = SmallFont.render(f"LV {game.player.power + 1}", True, HUD_DIM)
+        screen.blit(name_s, (box.x + 12, box.y + 26))
+        screen.blit(lv_s, lv_s.get_rect(topright = (box.right - 12, box.y + 26)))
+        game.player_hpbar.draw_hp(screen, box.x + 12, box.y + 50,
+                                  game.player.health, game.player.health_max, label = False)
+        hp_s = SmallFont.render(f"{int(game.player.health)}/{int(game.player.health_max)}", True, HUD_TEXT)
+        screen.blit(hp_s, hp_s.get_rect(midright = (box.right - 12, box.y + 70)))
+        if game.player_effects is not None:
+            game.player_effects.draw(screen, game.player)
+
+
+#Moves: one button per move, placed on a diamond and bound to WASD
+#(arrow keys work too). Index 0 = top/W, 1 = left/A, 2 = right/D, 3 = bottom/S
+MOVE_KEYS = ['W', 'A', 'D', 'S']
+KEY_TO_SLOT = {pygame.K_w: 'W', pygame.K_UP: 'W',
+               pygame.K_a: 'A', pygame.K_LEFT: 'A',
+               pygame.K_d: 'D', pygame.K_RIGHT: 'D',
+               pygame.K_s: 'S', pygame.K_DOWN: 'S'}
+DIAMOND_CENTRE = (878, 622)
+DIAMOND_OFFSETS = [(0, -53), (-92, 0), (92, 0), (0, 53)]
+MOVE_W, MOVE_H = 164, 46
+KEY_TAB = 22
+
+#Diamond shape
+class MovesUI:
+    def __init__(self, index, move):
+        self.move_index = index
         self.move = move
+        self.key = MOVE_KEYS[index]
+        dx, dy = DIAMOND_OFFSETS[index]
+        self.rect = pygame.Rect(0, 0, MOVE_W, MOVE_H)
+        self.rect.center = (DIAMOND_CENTRE[0] + dx, DIAMOND_CENTRE[1] + dy)
 
-    def draw(self, screen, CD = 0): 
-        color = Color['DGrey'] if CD == 0 else Color['DGrey'] #UI change Doesn't work - debug
-        pygame.draw.rect(screen, color, self.rect)
-        Textscreen = Font.render(self.move.name, True, Color['White'])
-        Textrender = Textscreen.get_rect(center = self.rect.center)
-        screen.blit(Textscreen, Textrender)
+    def usable(self, player):
+        return player.move_unlocked(self.move_index) and player.move_ready(self.move_index)
 
-        if CD > 0:
-            cd_text = SmallFont.render(f"CD:{CD}", True, Color['LRed']) #Displays the cooldown turn timer
-            cd_rect = cd_text.get_rect(topright = (self.rect.right-5, self.rect.top+5)) #On the top right
-            screen.blit (cd_text, cd_rect)
-    
-    def clicked (self, pos): #Return the click bool
-        return self.rect.collidepoint(pos) 
+    def draw(self, screen, player, my_turn):
+        locked = not player.move_unlocked(self.move_index)
+        cd = player.move_CDs[self.move_index]
+        active = my_turn and not locked and cd == 0
+
+        if active:   #soft pulsing cyan glow around ready moves
+            pulse = 60 + int(30 * abs(((pygame.time.get_ticks() // 20) % 100) - 50) / 50)
+            glow = pygame.Surface((MOVE_W + 8, MOVE_H + 8), pygame.SRCALPHA)
+            pygame.draw.rect(glow, (*HUD_GLOW, pulse), glow.get_rect(), border_radius = 3)
+            screen.blit(glow, (self.rect.x - 4, self.rect.y - 4))
+
+        edge = HUD_GLOW if active else HUD_DULL
+        draw_panel(screen, self.rect, fill = (40, 36, 64, 235) if active else (24, 22, 40, 200), edge = edge)
+        tab = pygame.Rect(self.rect.x, self.rect.y, KEY_TAB, MOVE_H)
+        pygame.draw.rect(screen, edge, tab)
+        key_s = SmallFont.render(self.key, True, (14, 12, 28))
+        screen.blit(key_s, key_s.get_rect(center = tab.center))
+
+        sub = f"LV {self.move.unlock + 1}" if locked else (f"CD {cd}" if cd > 0 else '')
+        name_s = SmallFont.render(self.move.name, True, HUD_TEXT if active else HUD_DIM)
+        text_x = tab.right + 8
+        if sub:
+            screen.blit(name_s, name_s.get_rect(midleft = (text_x, self.rect.centery - 8)))
+            sub_s = SmallFont.render(sub, True, HUD_DIM)
+            screen.blit(sub_s, sub_s.get_rect(midleft = (text_x, self.rect.centery + 10)))
+        else:
+            screen.blit(name_s, name_s.get_rect(midleft = (text_x, self.rect.centery)))
+
+    def clicked(self, pos): #Return the click bool
+        return self.rect.collidepoint(pos)
+
+
+def move_for_key(buttons, key):
+    slot = KEY_TO_SLOT.get(key)
+    for btn in buttons:
+        if btn.key == slot:
+            return btn
+    return None
+
+
+def draw_move_panel(screen, game, fog):
+    screen.blit(fog, (0, 0))
+    my_turn = game.turn == 'player'
+    if not my_turn:
+        wait = SmallFont.render("ENEMY TURN", True, HUD_DIM)
+        screen.blit(wait, wait.get_rect(center = (DIAMOND_CENTRE[0], DIAMOND_CENTRE[1] - 102)))
+    for btn in game.move_buttons:
+        btn.draw(screen, game.player, my_turn)
 
 
 class HPBAR:
-    def __init__(self, max_hp):
+    def __init__(self, max_hp, frame = 'HPBar_frame.png'): #Switch player and enemy frames
         self.max_hp = max_hp
-        self.hp_frame = load_img(asset('hud', 'HPBar_frame.png')).convert_alpha() 
+        self.hp_frame = load_img(asset('hud', frame)).convert_alpha()
         self.hp_bg = load_img(asset('hud', 'HPBar_bgfill.png')).convert_alpha() 
         self.hp_fill = load_img(asset('hud', 'HPBar_fill.png')).convert_alpha()
         self.char_name = ''
@@ -133,7 +256,7 @@ class HPBAR:
     def set_char(self, name):
         self.char_name = name
 
-    def draw_hp(self, screen, x, y, turn_hp, max_hp):   
+    def draw_hp(self, screen, x, y, turn_hp, max_hp, label = True):   #label = HP text inside the bar
         self.x, self.y = x, y
         screen.blit(self.hp_bg, (self.x, self.y)) #Bg
 
@@ -156,7 +279,8 @@ class HPBAR:
         text = SmallFont.render(f"HP: {int(turn_hp)}/{max_hp}", True, Color['White'])
         text_rect = text.get_rect(center = (self.x + 125 , self.y + 20)) #Position text at the center of hp bar
         screen.blit(self.hp_frame, (self.x, self.y)) #frame, should be on top of everything else
-        screen.blit(text, text_rect)
+        if label:
+            screen.blit(text, text_rect)
 
 class TestRect:
     def __init__(self, x, y, width, height, color):
@@ -187,6 +311,11 @@ class EffectsUI():
                     duration_txt = SmallestFont.render(f"{str(effect.duration)}", True, Color['White']) #Displays the cooldown turn timer
                     duration_rect = duration_txt.get_rect(topright = (x + self.ICON - 2, y + 2)) #On the top right
                     surf.blit(duration_txt, duration_rect)
+            else:   #no icon art yet: a small plate with the first two letters
+                slot = pygame.Rect(x, y, self.ICON, self.ICON)
+                draw_panel(surf, slot, edge = HUD_DULL)
+                abbr = SmallFont.render(effect.name[:2].upper(), True, HUD_DIM)
+                surf.blit(abbr, abbr.get_rect(center = slot.center))
 
             x += self.ICON + self.GAP #runs even if theres no icon
 

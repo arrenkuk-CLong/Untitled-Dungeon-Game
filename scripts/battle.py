@@ -52,30 +52,23 @@ def start_battle(game, encounter):
     game.enemy = entities.Character(enemy_type, enemy_data['health'], enemy_data['moves'], enemy_data['XP'])
     game.enemy_anim = None
     #game.enemy_hpbar = ui.HealthBar(WIDTH - 365, 75, 200, 40, enemy_data['health'])
-    game.enemy_hpbar = ui.HPBAR(enemy_data['health'])
+    game.enemy_hpbar = ui.HPBAR(enemy_data['health'], frame = 'Enemy_HPFrame.png')
     game.enemy_hpbar.set_char(enemy_type)    
     game.enemy_effects = ui.EffectsUI(game.enemy_hpbar)
 
+    GROUND_Y = 500
     #player idle
     game.player_idle_anim = draw_load.create_idle_anim(game.player.name)
     if game.player_idle_anim:
-        game.player_idle_anim.start((WIDTH//2 - 250, HEIGHT - 350))
+        game.player_idle_anim.start_on_ground(300, GROUND_Y)
 
     #Enemy idle
     game.enemy_idle_anim = draw_load.create_idle_anim(game.enemy.name)
     if game.enemy_idle_anim:
-        game.enemy_idle_anim.start((WIDTH//2 + 250, HEIGHT - 325))
+        game.enemy_idle_anim.start_on_ground(790, GROUND_Y)
 
-    #Create move buttons
-    game.move_buttons = [] #Reset
-    for i, move in enumerate(game.player.moves):
-        if not game.player.move_unlocked(i): #if power < index.unlock
-            continue
-        x = 200 + (i % 2) * 500 
-        y = 550 + (i // 2) * 70
-        move_button = ui.MovesUI(x, y, 220, 50, move)
-        move_button.move_index = i
-        game.move_buttons.append(move_button)
+    #WASD diamond. Locked moves are still shown dull
+    game.move_buttons = [ui.MovesUI(i, move) for i, move in enumerate(game.player.moves[:4])]
 
     game.player.reset_CD()
 
